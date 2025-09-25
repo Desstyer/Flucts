@@ -111,9 +111,7 @@ local Flags = {
 
 local Resolvers = {}
 
--- Private Functions --
-
--- Public Functions --
+-- Resolvers
 
 --[[
 	Linear Resolver
@@ -314,6 +312,8 @@ function Resolvers.LinearTable(fluct: Fluct): FluctValue
 
 	return currentValue
 end
+
+-- Public functions
 
 -- Create a new fluct object
 -- PARAMETERS:
