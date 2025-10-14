@@ -1,14 +1,14 @@
 --!strict
 --[[
-	-----------------------
-	- Flucts   V2         -
-	-----------------------
+	//-----------------------------//-//-------//
+	//- [Flucts]                  -//=//- V2.2-//
+	//-----------------------------//-//-------//
 	
-	--------------------------
-	- By @Desstyer           -
-	- Created: 24/9/2025     -
-	- Last updated: 24/9/25  -
-	--------------------------
+	//-----------------------------//
+	//- By @Desstyer              -//
+	//- Created: 24/9/2025        -//
+	//- Last updated: 14/10/2025  -//
+	//-----------------------------//
 	
 	Flucts allow to easily create dynamic and changeable values driven by events. They are made up of
 	different layers of actors each resolving into a single output value for the fluct.
@@ -19,11 +19,19 @@
 	- ResolverTags: Tags read by the resolvers to determine how to interpretate the actor's value
 	- Priority: Read by the resolver, determines the output of the fluct. Higher priority usually means more influence over
 	final result.
+	
 	FLUCTS:
-	- Properties: Similar to tags but with individual key-value pairs. Used by some resolvers to change their behavior.
+	- Properties: Similar to tags in actors. Used by some resolvers to change their behavior.
 	- Halted: If true, the fluct will not resolve and will keep the value it had when it was halted. When the fluct is unhalted
 	and read from again it will automatically resolve again.
 	- ValueChanged: Fires every time the fluct's value changes to a different one. Does not fire when created.
+
+	CHANGELOG (V2.1 -> V2.2)
+	- Added the option to activate and deactivate an actor (No need to remove and add them)
+		- Set via Actor:SetActivated(boolean) or Actor.Active = boolean (exact same)
+		- A deactivated actor has no difference from an enabled one except for its Actor.Active property
+		- When using Fluct:GetActors only active actors are retrieved
+	- Updated header style to use the new style (The text at the top of the script)
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -64,7 +72,7 @@ export type Fluct<V = FluctValue> = {
 	Dirty: boolean?,
 	
 	ValueChanged: Signal.Signal<FluctValue>,
-		
+	
 	Read: (self: any) -> (FluctValue),
 	RemoveActor: (self: any, actor: Actor) -> (Fluct),
 	AddActor: (self: any, actor: Actor) -> (Fluct),
@@ -76,6 +84,7 @@ export type Fluct<V = FluctValue> = {
 
 export type Actor = {
 	Value: FluctValue | (Actor) -> (FluctValue),
+	Active: boolean,
 	
 	Connection: Signal.Connection?,
 	Priority: number?,
@@ -84,13 +93,14 @@ export type Actor = {
 	ValueChanged: Signal.Signal<FluctValue>,
 	
 	Update: (self: any, new_value: FluctValue) -> (),
-	ListenTo: (self: any, update_signal: Signal.Signal<FluctValue>) -> (),
+	ListenTo: (self: any, update_signal: Signal.Signal<...any>) -> (),
 	ListenToPredicate: (self: any, update_signal: Signal.Signal<...any> | RBXScriptSignal, predicate: (...any) -> (FluctValue?)) -> (),
 	Destroy: (self: any) -> (),
 	Read: (self: any) -> (FluctValue),
 	GetTagValue: (self: any, tag: string) -> (any),
 	AddTag: (self: any, tag: string, value: any) -> (),
-	RemoveTag: (self: any, tag: string) -> ()
+	RemoveTag: (self: any, tag: string) -> (),
+	SetActive: (self: any, is_active: boolean) -> ()
 }
 
 -- Constants --
@@ -115,7 +125,8 @@ local Resolvers = {}
 
 --[[
 	Linear Resolver
-	
+	AVAILABLE TAGS -> {Operation [String]}
+
 	Starts with the default value at the lowest priority and works its way up, applying the actors' operations to the value.
 	Specify the operation type using the 'Operation' tag, which supports the following values:
 	- Set
@@ -139,19 +150,71 @@ function Resolvers.Linear(fluct: Fluct): FluctValue
 	-- Loop through all actors from lowest priority to highest priority
 	for i, actor in ipairs(actors) do
 		local operation = actor:GetTagValue("Operation")
+		local value = actor:Read()
 		if operation == "Set" then
-			currentValue = actor.Value
+			currentValue = value
 			continue
 		end
-		if typeof(currentValue) ~= "number" or typeof(actor.Value) ~= "number" then error(`Only number type supports add/sub/mul/div`) end
+		if typeof(currentValue) ~= "number" or typeof(value) ~= "number" then error(`Only number type supports add/sub/mul/div`) end
 		if operation == "Add" then
-			currentValue += actor.Value
+			currentValue += value
 		elseif operation == "Subtract" then
-			currentValue -= actor.Value
+			currentValue -= value
 		elseif operation == "Multiply" then
-			currentValue *= actor.Value
+			currentValue *= value
 		elseif operation == "Divide" then
-			currentValue /= actor.Value
+			currentValue /= value
+		end
+	end
+
+	return currentValue
+end
+
+--[[
+	LinearIf Resolver
+	AVAILABLE TAGS -> {Value [Number], Operation [String]}
+	
+	Identical to Linear resolver except it only applies the actors' operations if their value evaluates to true. To specify
+	the value of the actor, use the 'Value' tag (Since the actual value is occupied by the boolean)
+	
+	Starts with the default value at the lowest priority and works its way up, applying the actors' operations to the value.
+	Specify the operation type using the 'Operation' tag, which supports the following values:
+	- Set
+	- Add
+	- Subtract
+	- Multiply
+	- Divide
+]]
+function Resolvers.LinearIf(fluct: Fluct): FluctValue
+	local actors = fluct:GetActors()
+
+	-- Shift non-priority actors to the start of the list and keep high-priority actors at the end
+	table.sort(actors, function(a: Actor, b: Actor)
+		if not a.Priority then return true end
+		if not b.Priority then return false end
+		return a.Priority < b.Priority
+	end)
+
+	local currentValue = fluct.DefaultValue
+
+	-- Loop through all actors from lowest priority to highest priority
+	for i, actor in ipairs(actors) do
+		if not actor:Read() then continue end
+		local operation = actor:GetTagValue("Operation")
+		local value = actor:GetTagValue("Value")
+		if operation == "Set" then
+			currentValue = value
+			continue
+		end
+		if typeof(currentValue) ~= "number" or typeof(value) ~= "number" then error(`Only number type supports add/sub/mul/div`) end
+		if operation == "Add" then
+			currentValue += value
+		elseif operation == "Subtract" then
+			currentValue -= value
+		elseif operation == "Multiply" then
+			currentValue *= value
+		elseif operation == "Divide" then
+			currentValue /= value
 		end
 	end
 
@@ -265,13 +328,14 @@ end
 
 --[[
 	LinearTable Resolver
-
+	AVAILABLE TAGS -> {Operation [String], Key [String]}
+	
 	Starts with the default value and applies the actors operations to the table. Goes from lowest priority to highest.
 	Specify the operation type using the 'Operation' tag, which supports the following values:
 	- "Insert"
 	- "Remove" (Finds Actor.Value in the table and removes it if present)
-	- "Set"
-	- "SetKey={key_name}" (Sets key_name in the table to Actor.Value) 
+	- "Set" (Override the entire table to Actor.Value)
+	To set the value of a specific key in the table use the 'Key' tag. {Key = "KeyName"}
 ]]
 function Resolvers.LinearTable(fluct: Fluct): FluctValue
 	local actors = fluct:GetActors()
@@ -341,7 +405,8 @@ function CreateActor(params: CreateActorParams)
 		Value = params.DefaultValue,
 		Priority = params.Priority,
 		ResolverTags = params.ResolverTags,
-		ValueChanged = Signal.New()
+		ValueChanged = Signal.New(),
+		Active = true
 	}, Actor) :: Actor
 	
 	if params.UpdateSignal and params.UpdateSignal.Connect then
@@ -457,12 +522,14 @@ function Fluct:Halt(is_halted: boolean?)
 	return self
 end
 
+-- Get all active actors
 function Fluct:GetActors(): {Actor}
 	local self: Fluct = self
 	local actors = self.Actors
 	local actorList = {}
 	for _, entry in ipairs(actors) do
 		local actor = entry.Actor
+		if not actor.Active then continue end
 		table.insert(actorList, actor)
 	end
 	return actorList
@@ -480,7 +547,7 @@ function Actor:ListenTo(update_signal: Signal.Signal<FluctValue>)
 end
 
 -- Similar to Actor:ListenTo but with a predicate that interpretates the signal's parameters
-function Actor:ListenToPredicate(update_signal: Signal.Signal<...any>, predicate: (...any) -> (FluctValue?))
+function Actor:ListenToPredicate<T>(update_signal: Signal.Signal<T>, predicate: (T) -> (FluctValue?))
 	local self: Actor = self
 	if self.Connection then
 		self.Connection:Disconnect()
@@ -492,6 +559,11 @@ function Actor:ListenToPredicate(update_signal: Signal.Signal<...any>, predicate
 			self:Update(new_value)
 		end
 	end)
+end
+
+function Actor:SetActive(is_active: boolean)
+	local self: Actor = self
+	self.Active = is_active
 end
 
 function Actor:Update(new_value: FluctValue)
