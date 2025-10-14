@@ -71,7 +71,7 @@ export type Fluct<V = FluctValue> = {
 	Halted: boolean?,
 	Dirty: boolean?,
 	
-	ValueChanged: Signal.Signal<FluctValue>,
+	ValueChanged: Signal.Signal<V>,
 	
 	Read: (self: any) -> (FluctValue),
 	RemoveActor: (self: any, actor: Actor) -> (Fluct),
