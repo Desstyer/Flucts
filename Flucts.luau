@@ -1,7 +1,7 @@
 --!strict
 --[[
 	//-----------------------------//-//-------//
-	//- [Flucts]                  -//=//- V2.2-//
+	//- [Flucts]                  -//=//- V2.3-//
 	//-----------------------------//-//-------//
 	
 	//-----------------------------//
@@ -16,7 +16,7 @@
 	Flucts and actors only update when necessary and are event-driven, so they are performant.
 	
 	ACTORS:
-	- ResolverTags: Tags read by the resolvers to determine how to interpretate the actor's value
+	- Tags: Tags read by the resolvers to determine how to interpretate the actor's value
 	- Priority: Read by the resolver, determines the output of the fluct. Higher priority usually means more influence over
 	final result.
 	
@@ -32,6 +32,15 @@
 		- A deactivated actor has no difference from an enabled one except for its Actor.Active property
 		- When using Fluct:GetActors only active actors are retrieved
 	- Updated header style to use the new style (The text at the top of the script)
+	
+	CHANGELOG (V2.2 -> V2.3)
+	- Renamed 'ResolverTags' to 'Tags' throughout the codebase
+	- Added Fluct:GetActorsSorted() function for consistent sorting behavior
+	- Refactored all built-in resolvers to use GetActorsSorted()
+	- Fixed sorting logic in LastSet resolver
+	- Renamed 'Actor:GetTagValue' to 'Actor:GetTag'
+	- Renamed 'Actor:AddTag' to 'Actor:SetTag'
+	- Setting a tag's value now triggers the ValueChanged event (With the same value) to force a resolver update
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -53,7 +62,7 @@ type CreateActorParams = {
 	DefaultValue: FluctValue | (Actor) -> (FluctValue),
 	UpdateSignal: Signal.Signal<FluctValue>?,
 	Priority: number?,
-	ResolverTags: {[string]: any}?
+	Tags: {[string]: any}?
 }
 
 type CreateFluctParams<V> = {
@@ -66,13 +75,13 @@ export type Fluct<V = FluctValue> = {
 	DefaultValue: V,
 	Actors: {ActorEntry},
 	Resolver: Resolver,
-	
+
 	Properties: {[string]: any}?,
 	Halted: boolean?,
 	Dirty: boolean?,
-	
+
 	ValueChanged: Signal.Signal<V>,
-	
+
 	Read: (self: any) -> (FluctValue),
 	RemoveActor: (self: any, actor: Actor) -> (Fluct),
 	AddActor: (self: any, actor: Actor) -> (Fluct),
@@ -80,25 +89,26 @@ export type Fluct<V = FluctValue> = {
 	Resolve: (self: any) -> (Fluct),
 	SetProperties: (self: any, values: {[string]: any}) -> (Fluct),
 	GetActors: (self: any) -> ({Actor}),
+	GetActorsSorted: (self: any, mode: ">" | "<") -> ({Actor})
 }
 
 export type Actor = {
 	Value: FluctValue | (Actor) -> (FluctValue),
 	Active: boolean,
-	
+
 	Connection: Signal.Connection?,
 	Priority: number?,
-	ResolverTags: {[string]: any}?,
-	
+	Tags: {[string]: any}?,
+
 	ValueChanged: Signal.Signal<FluctValue>,
-	
+
 	Update: (self: any, new_value: FluctValue) -> (),
-	ListenTo: (self: any, update_signal: Signal.Signal<...any>) -> (),
+	ListenTo: (self: any, update_signal: Signal.Signal<...any> | RBXScriptSignal) -> (),
 	ListenToPredicate: (self: any, update_signal: Signal.Signal<...any> | RBXScriptSignal, predicate: (...any) -> (FluctValue?)) -> (),
 	Destroy: (self: any) -> (),
 	Read: (self: any) -> (FluctValue),
-	GetTagValue: (self: any, tag: string) -> (any),
-	AddTag: (self: any, tag: string, value: any) -> (),
+	GetTag: (self: any, tag: string) -> (any),
+	SetTag: (self: any, tag: string, value: any) -> (),
 	RemoveTag: (self: any, tag: string) -> (),
 	SetActive: (self: any, is_active: boolean) -> ()
 }
@@ -136,20 +146,12 @@ local Resolvers = {}
 	- Divide
 ]]
 function Resolvers.Linear(fluct: Fluct): FluctValue
-	local actors = fluct:GetActors()
-	
-	-- Shift non-priority actors to the start of the list and keep high-priority actors at the end
-	table.sort(actors, function(a: Actor, b: Actor)
-		if not a.Priority then return true end
-		if not b.Priority then return false end
-		return a.Priority < b.Priority
-	end)
-
+	local actors = fluct:GetActorsSorted("<")
 	local currentValue = fluct.DefaultValue
-	
+
 	-- Loop through all actors from lowest priority to highest priority
 	for i, actor in ipairs(actors) do
-		local operation = actor:GetTagValue("Operation")
+		local operation = actor:GetTag("Operation")
 		local value = actor:Read()
 		if operation == "Set" then
 			currentValue = value
@@ -186,22 +188,14 @@ end
 	- Divide
 ]]
 function Resolvers.LinearIf(fluct: Fluct): FluctValue
-	local actors = fluct:GetActors()
-
-	-- Shift non-priority actors to the start of the list and keep high-priority actors at the end
-	table.sort(actors, function(a: Actor, b: Actor)
-		if not a.Priority then return true end
-		if not b.Priority then return false end
-		return a.Priority < b.Priority
-	end)
-
+	local actors = fluct:GetActorsSorted("<")
 	local currentValue = fluct.DefaultValue
 
 	-- Loop through all actors from lowest priority to highest priority
 	for i, actor in ipairs(actors) do
 		if not actor:Read() then continue end
-		local operation = actor:GetTagValue("Operation")
-		local value = actor:GetTagValue("Value")
+		local operation = actor:GetTag("Operation")
+		local value = actor:GetTag("Value")
 		if operation == "Set" then
 			currentValue = value
 			continue
@@ -228,13 +222,13 @@ end
 ]]
 function Resolvers.AllTrue(fluct: Fluct): FluctValue
 	local actors = fluct:GetActors()
-	
+
 	local value = true
 	for _, actor in ipairs(actors) do
 		--if typeof(actor:Read()) ~= "boolean" then error(`Only booleans are supported`) end
 		value = value and actor:Read()
 	end
-	
+
 	return value ~= nil and value ~= false
 end
 
@@ -245,13 +239,13 @@ end
 ]]
 function Resolvers.AnyTrue(fluct: Fluct): FluctValue
 	local actors = fluct:GetActors()
-	
+
 	local value = false
 	for _, actor in ipairs(actors) do
 		--if typeof(actor:Read()) ~= "boolean" then error(`Only booleans are supported`) end
 		value = value or actor:Read()
 	end
-	
+
 	return value ~= nil and value ~= false
 end
 
@@ -261,21 +255,13 @@ end
 	Resolves to the value of the highest-priority actor.
 ]]
 function Resolvers.FirstSet(fluct: Fluct): FluctValue
-	local actors = fluct:GetActors()
-	
-	-- Shift non-priority actors to the start of the list and keep high-priority actors at the end
-	table.sort(actors, function(a: Actor, b: Actor)
-		if not a.Priority then return true end
-		if not b.Priority then return false end
-		return a.Priority < b.Priority
-	end)
-	
-	local highestValue: FluctValue
-	for _, actor in ipairs(actors) do
-		highestValue = actor:Read()
+	local actors = fluct:GetActorsSorted(">")
+
+	if #actors == 0 then
+		return fluct.DefaultValue
 	end
-	
-	return highestValue
+
+	return actors[1]:Read()
 end
 
 --[[
@@ -284,21 +270,13 @@ end
 	Resolves to the value of the lowest-priority actor.
 ]]
 function Resolvers.LastSet(fluct: Fluct): FluctValue
-	local actors = fluct:GetActors()
+	local actors = fluct:GetActorsSorted("<")
 
-	-- Shift non-priority actors to the end of the list and keep high-priority actors at the start
-	table.sort(actors, function(a: Actor, b: Actor)
-		if not a.Priority then return false end
-		if not b.Priority then return true end
-		return a.Priority > b.Priority
-	end)
-
-	local lowestValue: FluctValue
-	for _, actor in ipairs(actors) do
-		lowestValue = actor:Read()
+	if #actors == 0 then
+		return fluct.DefaultValue
 	end
 
-	return lowestValue
+	return actors[1]:Read()
 end
 
 --[[
@@ -308,11 +286,11 @@ end
 ]]
 function Resolvers.Single(fluct: Fluct): FluctValue
 	local actors = fluct:GetActors()
-	
+
 	if #actors > 1 then
 		error(`Fluct has more than 1 actor`)
 	end
-	
+
 	return actors[1]:Read()
 end
 
@@ -338,26 +316,18 @@ end
 	To set the value of a specific key in the table use the 'Key' tag. {Key = "KeyName"}
 ]]
 function Resolvers.LinearTable(fluct: Fluct): FluctValue
-	local actors = fluct:GetActors()
-
-	-- Shift non-priority actors to the start of the list and keep high-priority actors at the end
-	table.sort(actors, function(a: Actor, b: Actor)
-		if not a.Priority then return true end
-		if not b.Priority then return false end
-		return a.Priority < b.Priority
-	end)
-
+	local actors = fluct:GetActorsSorted("<")
 	local currentValue: {any} = fluct.DefaultValue
-	
+
 	if typeof(currentValue) ~= "table" then
 		error(`Only table type is supported`)
 	end
 
 	-- Loop through all actors from lowest priority to highest priority
 	for i, actor in ipairs(actors) do
-		if not actor.ResolverTags then continue end
+		if not actor.Tags then continue end
 		if typeof(actor.Value) ~= "table" then error(`Only table type is supported`) end
-		local operation = actor:GetTagValue("Operation")
+		local operation = actor:GetTag("Operation")
 		if operation == "Set" then
 			currentValue = actor.Value
 		elseif operation == "Remove" then
@@ -368,7 +338,7 @@ function Resolvers.LinearTable(fluct: Fluct): FluctValue
 		elseif operation == "Insert" then
 			table.insert(currentValue :: {any}, actor:Read())
 		end
-		local key = actor:GetTagValue("Key")
+		local key = actor:GetTag("Key")
 		if operation == "SetKey" and key then
 			(currentValue :: any)[key] = actor:Read()
 		end
@@ -384,7 +354,7 @@ end
 -- Id: string, DefaultValue: FluctValue, Resolver: (Fluct) -> FluctValue
 function CreateFluct<V>(params: CreateFluctParams<V>): Fluct<V>
 	assert(params.Resolver and typeof(params.DefaultValue) ~= "nil", `Invalid parameters`)
-	
+
 	local self = setmetatable({
 		Value = params.DefaultValue,
 		DefaultValue = params.DefaultValue,
@@ -392,27 +362,27 @@ function CreateFluct<V>(params: CreateFluctParams<V>): Fluct<V>
 		Actors = {},
 		ValueChanged = Signal.New()
 	}, Fluct) :: Fluct
-	
+
 	return self
 end
 
 -- Creates a new actor
 -- PARAMETERS:
--- DefaultValue: FluctValue, UpdateSignal: Signal.Signal<FluctValue>?, Priority: number?, ResolverTags: {string}?
+-- DefaultValue: FluctValue, UpdateSignal: Signal.Signal<FluctValue>?, Priority: number?, Tags: {string}?
 function CreateActor(params: CreateActorParams)
 	assert(typeof(params.DefaultValue) ~= "nil", `Invalid parameters`)	
 	local self = setmetatable({
 		Value = params.DefaultValue,
 		Priority = params.Priority,
-		ResolverTags = params.ResolverTags,
+		Tags = params.Tags,
 		ValueChanged = Signal.New(),
 		Active = true
 	}, Actor) :: Actor
-	
+
 	if params.UpdateSignal and params.UpdateSignal.Connect then
 		self:ListenTo(params.UpdateSignal)
 	end
-	
+
 	return self
 end
 
@@ -423,7 +393,7 @@ function Fluct:AddActor(actor: Actor): Fluct
 		Actor = actor,
 		Connections = {}
 	}
-	
+
 	table.insert(self.Actors, entry)
 	table.insert(entry.Connections, actor.ValueChanged:Connect(function(new)
 		if new == Flags.ActorDestroyed then
@@ -436,35 +406,35 @@ function Fluct:AddActor(actor: Actor): Fluct
 			self.Dirty = true
 		end
 	end))
-	
+
 	if not self.Halted then
 		self:Resolve()
 	else
 		self.Dirty = true
 	end
-	
+
 	return self
 end
 
 function Fluct:Resolve(): Fluct
 	local self: Fluct = self
-	
+
 	if self.Halted then self.Dirty = true error(`Cannot resolve a halted fluct ({self})`) end
-	
+
 	self.Dirty = false
-	
+
 	local result = self.Resolver(self)
-	
+
 	if typeof(result) ~= typeof(self.Value) then self.Dirty = true error(`Could not resolve fluct: {typeof(self.Value)} expected, got  {typeof(result)}`) end
-	
+
 	local previous = self.Value
 	self.Value = result
-	
+
 	-- TODO: Add deep-equal for tables (also update Actor:Update())
 	if previous ~= result then
 		self.ValueChanged:Fire(result)
 	end
-	
+
 	return self
 end
 
@@ -485,13 +455,13 @@ function Fluct:RemoveActor(actor: Actor): Fluct
 			v:Disconnect()
 		end
 	end
-	
+
 	if not self.Halted then
 		self:Resolve()
 	else
 		self.Dirty = true
 	end
-	
+
 	return self
 end
 
@@ -533,6 +503,35 @@ function Fluct:GetActors(): {Actor}
 		table.insert(actorList, actor)
 	end
 	return actorList
+end
+
+-- Get all active actors sorted by priority
+-- mode: ">" for descending (highest priority first), "<" for ascending (lowest priority first)
+function Fluct:GetActorsSorted(mode: ">" | "<"): {Actor}
+	local self: Fluct = self
+	local actors = self:GetActors()
+
+	if mode == ">" then
+		-- Sort highest priority first (descending)
+		-- Non-priority actors are treated as lowest priority, so they go to the end
+		table.sort(actors, function(a: Actor, b: Actor)
+			if not a.Priority then return false end
+			if not b.Priority then return true end
+			return a.Priority > b.Priority
+		end)
+	elseif mode == "<" then
+		-- Sort lowest priority first (ascending)
+		-- Non-priority actors are treated as lowest priority, so they go to the start
+		table.sort(actors, function(a: Actor, b: Actor)
+			if not a.Priority then return true end
+			if not b.Priority then return false end
+			return a.Priority < b.Priority
+		end)
+	else
+		error(`Invalid sort mode: {mode}. Use ">" or "<"`)
+	end
+
+	return actors
 end
 
 function Actor:ListenTo(update_signal: Signal.Signal<FluctValue>)
@@ -583,26 +582,31 @@ function Actor:Read()
 	return self.Value
 end
 
-function Actor:GetTagValue(tag: string)
+function Actor:GetTag(tag: string)
 	local self: Actor = self
-	if not self.ResolverTags then return end
-	return self.ResolverTags[tag]
+	if not self.Tags then return end
+	return self.Tags[tag]
 end
 
-function Actor:AddTag(tag: string, value: any)
+function Actor:SetTag(tag: string, value: any)
 	local self: Actor = self
-	if not self.ResolverTags then
-		self.ResolverTags = {}
+	if not self.Tags then
+		self.Tags = {}
 	end
-	if self.ResolverTags then
-		self.ResolverTags[tag] = value
+	if self.Tags then
+		local previous = self.Tags[tag]
+		self.Tags[tag] = value
+		if value ~= previous then
+			-- Trigger a resolver update
+			self.ValueChanged:Fire(self:Read())
+		end
 	end
 end
 
 function Actor:RemoveTag(tag: string)
 	local self: Actor = self
-	if not self.ResolverTags then return end
-	self.ResolverTags[tag] = nil
+	if not self.Tags then return end
+	self.Tags[tag] = nil
 end
 
 function Actor:Destroy()
