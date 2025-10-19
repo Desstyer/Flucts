@@ -1,6 +1,6 @@
 # Flucts
 
-**Version 2.2**
+**Version 2.3**
 
 Flucts is a module for making dynamic, event-driven state objects that can be influenced by multiple sources simultaneously.
 
