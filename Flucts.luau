@@ -1,8 +1,8 @@
 --!strict
 --[[
-	//-----------------------------//-//-------//
-	//- [Flucts]                  -//=//- V2.3-//
-	//-----------------------------//-//-------//
+	//-----------------------------//-//--------//
+	//- [Flucts]                  -//=//-V2.4.1-//
+	//-----------------------------//-//--------//
 	
 	//-----------------------------//
 	//- By @Desstyer              -//
@@ -25,13 +25,6 @@
 	- Halted: If true, the fluct will not resolve and will keep the value it had when it was halted. When the fluct is unhalted
 	and read from again it will automatically resolve again.
 	- ValueChanged: Fires every time the fluct's value changes to a different one. Does not fire when created.
-
-	CHANGELOG (V2.1 -> V2.2)
-	- Added the option to activate and deactivate an actor (No need to remove and add them)
-		- Set via Actor:SetActivated(boolean) or Actor.Active = boolean (exact same)
-		- A deactivated actor has no difference from an enabled one except for its Actor.Active property
-		- When using Fluct:GetActors only active actors are retrieved
-	- Updated header style to use the new style (The text at the top of the script)
 	
 	CHANGELOG (V2.2 -> V2.3)
 	- Renamed 'ResolverTags' to 'Tags' throughout the codebase
@@ -41,6 +34,14 @@
 	- Renamed 'Actor:GetTagValue' to 'Actor:GetTag'
 	- Renamed 'Actor:AddTag' to 'Actor:SetTag'
 	- Setting a tag's value now triggers the ValueChanged event (With the same value) to force a resolver update
+	
+	CHANGELOG (V2.3 -> V2.4)
+	- Added Id property to actors
+	- Added Fluct:GetActorFromId(id)
+	
+	CHANGELOG (V2.4 -> V2.4.1)
+	- Changed Fluct:Resolve to use DeepEqual when checking values
+	- Changed Actor:Update to use DeepEqual when checking values
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -49,16 +50,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 -- Dependencies --
-local Signal = require(ReplicatedStorage.Libraries.Signal)
+local Signal = require(ReplicatedStorage.Libraries.Librarian.Signal)
 
 -- Types --
-type FluctValue = number | string | boolean | any
+type FluctValue = any
 
 type ActorEntry = {Actor: Actor, Connections: {Signal.Connection}}
 
 export type Resolver = (Fluct) -> (FluctValue)
 
 type CreateActorParams = {
+	Id: string?,
 	DefaultValue: FluctValue | (Actor) -> (FluctValue),
 	UpdateSignal: Signal.Signal<FluctValue>?,
 	Priority: number?,
@@ -82,14 +84,15 @@ export type Fluct<V = FluctValue> = {
 
 	ValueChanged: Signal.Signal<V>,
 
-	Read: (self: any) -> (FluctValue),
+	Read: (self: any) -> (V),
 	RemoveActor: (self: any, actor: Actor) -> (Fluct),
 	AddActor: (self: any, actor: Actor) -> (Fluct),
 	Halt: (self: any, is_halted: boolean) -> (Fluct),
 	Resolve: (self: any) -> (Fluct),
 	SetProperties: (self: any, values: {[string]: any}) -> (Fluct),
 	GetActors: (self: any) -> ({Actor}),
-	GetActorsSorted: (self: any, mode: ">" | "<") -> ({Actor})
+	GetActorsSorted: (self: any, mode: ">" | "<") -> ({Actor}),
+	GetActorFromId: (self: any, actor_id: string) -> (Actor)
 }
 
 export type Actor = {
@@ -101,9 +104,11 @@ export type Actor = {
 	Tags: {[string]: any}?,
 
 	ValueChanged: Signal.Signal<FluctValue>,
+	
+	Id: string?,
 
 	Update: (self: any, new_value: FluctValue) -> (),
-	ListenTo: (self: any, update_signal: Signal.Signal<...any> | RBXScriptSignal) -> (),
+	ListenTo: (self: any, update_signal: Signal.Signal<FluctValue> | RBXScriptSignal) -> (),
 	ListenToPredicate: (self: any, update_signal: Signal.Signal<...any> | RBXScriptSignal, predicate: (...any) -> (FluctValue?)) -> (),
 	Destroy: (self: any) -> (),
 	Read: (self: any) -> (FluctValue),
@@ -130,6 +135,31 @@ local Flags = {
 }
 
 local Resolvers = {}
+
+-- Private Functions --
+
+function DeepEqual(t1: {any}, t2: {any})
+	if type(t1) ~= "table" or type(t2) ~= "table" then
+		return t1 == t2 -- Compare non-table values directly
+	end
+
+	local keysChecked = {}
+
+	for k, v in pairs(t1) do
+		if not DeepEqual(v, t2[k]) then
+			return false
+		end
+		keysChecked[k] = true
+	end
+
+	for k in pairs(t2) do
+		if not keysChecked[k] then
+			return false -- Extra key in t2
+		end
+	end
+
+	return true
+end
 
 -- Resolvers
 
@@ -200,7 +230,9 @@ function Resolvers.LinearIf(fluct: Fluct): FluctValue
 			currentValue = value
 			continue
 		end
-		if typeof(currentValue) ~= "number" or typeof(value) ~= "number" then error(`Only number type supports add/sub/mul/div`) end
+		if typeof(currentValue) ~= typeof(value) then
+			warn(`[{script.Name}]: Adding 2 values of different types might cause errors. ActorId: '{actor.Id}'`)	
+		end
 		if operation == "Add" then
 			currentValue += value
 		elseif operation == "Subtract" then
@@ -368,7 +400,7 @@ end
 
 -- Creates a new actor
 -- PARAMETERS:
--- DefaultValue: FluctValue, UpdateSignal: Signal.Signal<FluctValue>?, Priority: number?, Tags: {string}?
+-- Id: string?, DefaultValue: FluctValue, UpdateSignal: Signal.Signal<FluctValue>?, Priority: number?, Tags: {string}?
 function CreateActor(params: CreateActorParams)
 	assert(typeof(params.DefaultValue) ~= "nil", `Invalid parameters`)	
 	local self = setmetatable({
@@ -376,7 +408,8 @@ function CreateActor(params: CreateActorParams)
 		Priority = params.Priority,
 		Tags = params.Tags,
 		ValueChanged = Signal.New(),
-		Active = true
+		Active = true,
+		Id = params.Id
 	}, Actor) :: Actor
 
 	if params.UpdateSignal and params.UpdateSignal.Connect then
@@ -398,7 +431,6 @@ function Fluct:AddActor(actor: Actor): Fluct
 	table.insert(entry.Connections, actor.ValueChanged:Connect(function(new)
 		if new == Flags.ActorDestroyed then
 			self:RemoveActor(actor)
-			return
 		end
 		if not self.Halted then
 			self:Resolve()
@@ -425,13 +457,14 @@ function Fluct:Resolve(): Fluct
 
 	local result = self.Resolver(self)
 
-	if typeof(result) ~= typeof(self.Value) then self.Dirty = true error(`Could not resolve fluct: {typeof(self.Value)} expected, got  {typeof(result)}`) end
+	if typeof(result) ~= typeof(self.Value) then self.Dirty = true error(`Could not resolve fluct: {typeof(self.Value)} expected, got {typeof(result)}`) end
 
 	local previous = self.Value
 	self.Value = result
 
-	-- TODO: Add deep-equal for tables (also update Actor:Update())
-	if previous ~= result then
+	if typeof(self.Value) == "table" and not DeepEqual(previous, result) then
+		self.ValueChanged:Fire(result)
+	elseif typeof(self.Value) ~= "table" and previous ~= result then
 		self.ValueChanged:Fire(result)
 	end
 
@@ -503,6 +536,18 @@ function Fluct:GetActors(): {Actor}
 		table.insert(actorList, actor)
 	end
 	return actorList
+end
+
+function Fluct:GetActorFromId(actor_id: string): Actor
+	local self: Fluct = self
+	local actors = self.Actors
+	for _, entry in ipairs(actors) do
+		local actor = entry.Actor
+		if actor.Id == actor_id then
+			return actor
+		end
+	end
+	error(`No actor with id '{actor_id}' was found`)
 end
 
 -- Get all active actors sorted by priority
@@ -577,7 +622,8 @@ end
 function Actor:Read()
 	local self: Actor = self
 	if typeof(self.Value) == "function" then
-		return self.Value(self)
+		local fn: (Actor) -> (any) = self.Value
+		return fn(self)
 	end
 	return self.Value
 end
