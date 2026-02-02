@@ -1,13 +1,13 @@
 --!strict
 --[[
 	//-----------------------------//-//--------//
-	//- [Flucts]                  -//=//-V2.4.1-//
+	//- [Flucts]                  -//=//-V2.4.2-//
 	//-----------------------------//-//--------//
 	
 	//-----------------------------//
 	//- By @Desstyer              -//
 	//- Created: 24/9/2025        -//
-	//- Last updated: 14/10/2025  -//
+	//- Last updated: 2/2/2026    -//
 	//-----------------------------//
 	
 	Flucts allow to easily create dynamic and changeable values driven by events. They are made up of
@@ -15,18 +15,18 @@
 	
 	Flucts and actors only update when necessary and are event-driven, so they are performant.
 	
-	ACTORS:
+	Actors:
 	- Tags: Tags read by the resolvers to determine how to interpretate the actor's value
 	- Priority: Read by the resolver, determines the output of the fluct. Higher priority usually means more influence over
 	final result.
 	
-	FLUCTS:
+	Flucts:
 	- Properties: Similar to tags in actors. Used by some resolvers to change their behavior.
 	- Halted: If true, the fluct will not resolve and will keep the value it had when it was halted. When the fluct is unhalted
 	and read from again it will automatically resolve again.
 	- ValueChanged: Fires every time the fluct's value changes to a different one. Does not fire when created.
 	
-	CHANGELOG (V2.2 -> V2.3)
+	Changelog (V2.2 -> V2.3)
 	- Renamed 'ResolverTags' to 'Tags' throughout the codebase
 	- Added Fluct:GetActorsSorted() function for consistent sorting behavior
 	- Refactored all built-in resolvers to use GetActorsSorted()
@@ -35,13 +35,17 @@
 	- Renamed 'Actor:AddTag' to 'Actor:SetTag'
 	- Setting a tag's value now triggers the ValueChanged event (With the same value) to force a resolver update
 	
-	CHANGELOG (V2.3 -> V2.4)
+	Changelog (V2.3 -> V2.4)
 	- Added Id property to actors
 	- Added Fluct:GetActorFromId(id)
 	
-	CHANGELOG (V2.4 -> V2.4.1)
+	Changelog (V2.4 -> V2.4.1)
 	- Changed Fluct:Resolve to use DeepEqual when checking values
 	- Changed Actor:Update to use DeepEqual when checking values
+	
+	Changelog (V2.4.1 -> V2.4.2)
+	- Actor:Update now actually uses DeepEqual
+	- Module is now packaged with signal
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -50,7 +54,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 -- Dependencies --
-local Signal = require(ReplicatedStorage.Libraries.Librarian.Signal)
+local Signal = require(script.Signal)
 
 -- Types --
 type FluctValue = any
@@ -614,7 +618,9 @@ function Actor:Update(new_value: FluctValue)
 	local self: Actor = self
 	local oldValue = self.Value
 	self.Value = new_value
-	if new_value ~= oldValue then
+	if typeof(new_value) == "table" and typeof(oldValue) == "table" and not DeepEqual(new_value, oldValue) then
+		self.ValueChanged:Fire(new_value)
+	elseif new_value ~= oldValue then
 		self.ValueChanged:Fire(new_value)
 	end
 end
